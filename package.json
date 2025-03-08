@@ -1,0 +1,23 @@
+{
+  "name": "google-calendar-line-bot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.1.0",
+    "@line/bot-sdk": "^8.0.0",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "firebase-admin": "^13.2.0",
+    "google-auth-library": "^9.4.1",
+    "googleapis": "^129.0.0",
+    "openai": "^4.20.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

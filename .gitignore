@@ -1,0 +1,17 @@
+node_modules/
+
+# 環境変数
+.env
+
+# 認証情報
+src/config/firebase-admin-key.json
+
+# ログ
+*.log
+
+# macOS
+.DS_Store
+
+# エディタ設定
+.vscode/
+.idea/
