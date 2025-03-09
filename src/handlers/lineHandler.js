@@ -22,27 +22,8 @@ async function handleLineWebhook(req, res) {
       console.log('受信メッセージ:', text);
       console.log('ユーザーID:', userId);
 
-      // 認証状態をチェック
-      const tokens = await getTokens(userId);
-      
-      if (!tokens && text !== '/auth') {
-        await lineClient.replyMessage(event.replyToken, {
-          type: 'text',
-          text: 'Googleカレンダーとの連携が必要です。以下のコマンドを送信してください：\n/auth'
-        });
-        continue;
-      }
-
-      if (text === '/auth') {
-        const authUrl = await getAuthUrl(userId);
-        await lineClient.replyMessage(event.replyToken, {
-          type: 'text',
-          text: `Googleカレンダーと連携するには以下のURLをクリックしてください：\n${authUrl}`
-        });
-        continue;
-      }
-
       try {
+        // まず、メッセージを解析
         const parsedRequest = await analyzeMessage(text);
         console.log('解析結果:', parsedRequest);
 
@@ -50,6 +31,20 @@ async function handleLineWebhook(req, res) {
           throw new Error('予定の詳細が不足しています');
         }
 
+        // 認証状態をチェック
+        const tokens = await getTokens(userId);
+        
+        if (!tokens) {
+          // 未認証の場合、認証URLを送信
+          const authUrl = await getAuthUrl(userId);
+          await lineClient.replyMessage(event.replyToken, {
+            type: 'text',
+            text: `予定を登録するには、Googleカレンダーとの連携が必要です。\n以下のURLをクリックして連携を行ってください：\n${authUrl}`
+          });
+          continue;
+        }
+
+        // 認証済みの場合、カレンダー操作を実行
         const result = await handleCalendarOperation(userId, parsedRequest);
         
         const actionText = {
