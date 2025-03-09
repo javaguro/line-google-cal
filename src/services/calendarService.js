@@ -1,6 +1,8 @@
 const { google } = require('googleapis');
 const { getTokens } = require('./firestoreService');
 
+let lastCreatedEvent = null;
+
 function parseDateTime(dateStr, timeStr) {
   const now = new Date();
   let date;
@@ -36,7 +38,13 @@ async function handleCalendarOperation(userId, request) {
 
     switch (request.action) {
       case 'create':
-        await createEvent(calendar, request);
+        const createdEvent = await createEvent(calendar, request);
+        lastCreatedEvent = {
+          id: createdEvent.id,
+          summary: createdEvent.summary,
+          date: request.date,
+          time: request.time
+        };
         return { success: true, action: '登録' };
       case 'update':
         await updateEvent(calendar, request);
@@ -106,42 +114,74 @@ async function createEvent(calendar, request) {
     };
   }
 
-  await calendar.events.insert({
+  const response = await calendar.events.insert({
     calendarId: 'primary',
     requestBody: eventData,
     conferenceDataVersion: request.link === 'Google Meet' ? 1 : 0,
     sendUpdates: request.attendees ? 'all' : 'none'
   });
+
+  return response.data;
 }
 
 async function updateEvent(calendar, request) {
-  // まず、指定された日時の予定を検索
-  const startDateTime = parseDateTime(request.date, request.time);
-  const endDateTime = new Date(startDateTime);
-  endDateTime.setHours(endDateTime.getHours() + 1); // 検索用に1時間後まで
+  // 指定された日付の予定を検索（時間の前後1日も含める）
+  const searchDate = parseDateTime(request.date, '00:00');
+  const nextDay = new Date(searchDate);
+  nextDay.setDate(nextDay.getDate() + 1);
 
   const events = await calendar.events.list({
     calendarId: 'primary',
-    timeMin: startDateTime.toISOString(),
-    timeMax: endDateTime.toISOString(),
-    q: request.eventName, // イベント名で検索
+    timeMin: searchDate.toISOString(),
+    timeMax: nextDay.toISOString(),
     singleEvents: true,
     orderBy: 'startTime'
   });
 
   if (!events.data.items || events.data.items.length === 0) {
+    throw new Error('指定された日付の予定が見つかりませんでした');
+  }
+
+  // 直前に作成または更新した予定があれば、それを優先的に更新
+  let targetEvent = null;
+  if (lastCreatedEvent && lastCreatedEvent.date === request.date) {
+    targetEvent = events.data.items.find(event => event.id === lastCreatedEvent.id);
+  }
+
+  // 直前の予定が見つからない場合は、時間とタイトルで検索
+  if (!targetEvent) {
+    for (const event of events.data.items) {
+      const eventStart = new Date(event.start.dateTime);
+      const requestedTime = request.time ? parseDateTime(request.date, request.time) : null;
+      
+      if (requestedTime && eventStart.getHours() === requestedTime.getHours() && 
+          eventStart.getMinutes() === requestedTime.getMinutes()) {
+        targetEvent = event;
+        break;
+      }
+      
+      if (!requestedTime && event.summary && (
+        event.summary.includes('打ち合わせ') ||
+        event.summary.includes('ミーティング') ||
+        event.summary.includes(request.eventName)
+      )) {
+        targetEvent = event;
+        break;
+      }
+    }
+  }
+
+  if (!targetEvent) {
     throw new Error('指定された予定が見つかりませんでした');
   }
 
-  // 最も近い予定を更新
-  const event = events.data.items[0];
-  const newStartDateTime = parseDateTime(request.date, request.time);
+  const newStartDateTime = request.time ? parseDateTime(request.date, request.time) : new Date(targetEvent.start.dateTime);
   const newEndDateTime = new Date(newStartDateTime);
-  const durationInMinutes = request.duration || 60;
+  const durationInMinutes = request.duration || Math.floor((new Date(targetEvent.end.dateTime) - new Date(targetEvent.start.dateTime)) / (1000 * 60));
   newEndDateTime.setMinutes(newEndDateTime.getMinutes() + durationInMinutes);
 
   const eventData = {
-    summary: request.eventName,
+    summary: request.eventName || targetEvent.summary,
     start: {
       dateTime: newStartDateTime.toISOString(),
       timeZone: 'Asia/Tokyo'
@@ -152,18 +192,22 @@ async function updateEvent(calendar, request) {
     }
   };
 
-  // 場所が指定されている場合
-  if (request.location) {
+  // 既存の設定を保持
+  if (targetEvent.location && !request.location) {
+    eventData.location = targetEvent.location;
+  } else if (request.location) {
     eventData.location = request.location;
   }
 
-  // ゲストが指定されている場合
-  if (request.attendees && request.attendees.length > 0) {
+  if (targetEvent.attendees && !request.attendees) {
+    eventData.attendees = targetEvent.attendees;
+  } else if (request.attendees) {
     eventData.attendees = request.attendees.map(email => ({ email }));
   }
 
-  // Google Meetリンクが要求されている場合
-  if (request.link === 'Google Meet' && !event.conferenceData) {
+  if (targetEvent.conferenceData && !request.link) {
+    eventData.conferenceData = targetEvent.conferenceData;
+  } else if (request.link === 'Google Meet' && !targetEvent.conferenceData) {
     eventData.conferenceData = {
       createRequest: {
         requestId: `${Date.now()}-${Math.random().toString(36).substring(7)}`,
@@ -172,13 +216,21 @@ async function updateEvent(calendar, request) {
     };
   }
 
-  await calendar.events.update({
+  const response = await calendar.events.update({
     calendarId: 'primary',
-    eventId: event.id,
+    eventId: targetEvent.id,
     requestBody: eventData,
     conferenceDataVersion: request.link === 'Google Meet' ? 1 : 0,
     sendUpdates: request.attendees ? 'all' : 'none'
   });
+
+  // 更新した予定を記録
+  lastCreatedEvent = {
+    id: response.data.id,
+    summary: response.data.summary,
+    date: request.date,
+    time: request.time || targetEvent.start.dateTime
+  };
 }
 
 async function deleteEvent(calendar, request) {
